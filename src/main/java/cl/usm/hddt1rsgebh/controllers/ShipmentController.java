@@ -56,8 +56,10 @@ public class ShipmentController {
         }
     }
 
-    @PostMapping("/shipments/")
+    @PostMapping("/shipments")
     public ResponseEntity<Boolean> createShipment(@RequestBody ShipmentRequest shipment){
         return ResponseEntity.ok(this.shipmentService.createShipment(shipment));
     }
+
+
 }

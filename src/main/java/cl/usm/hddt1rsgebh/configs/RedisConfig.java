@@ -10,6 +10,8 @@ import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJacksonJsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
+import tools.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
+import tools.jackson.databind.jsontype.PolymorphicTypeValidator;
 
 import java.time.Duration;
 
@@ -35,11 +37,21 @@ public class RedisConfig {
 
     @Bean
     public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+        // restrict polymorphic deserialization to our own types so the
+        // serializer embeds @class info (needed to read cached values back as
+        // their concrete type instead of a LinkedHashMap)
+        PolymorphicTypeValidator typeValidator = BasicPolymorphicTypeValidator.builder()
+                .allowIfSubType("cl.usm.hddt1rsgebh.")
+                .allowIfSubType("java.util.")
+                .build();
+
         RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig()
-                .entryTtl(Duration.ofMinutes(10))
+                .entryTtl(Duration.ofSeconds(120))
                 .disableCachingNullValues()
                 .serializeValuesWith(RedisSerializationContext.SerializationPair
-                        .fromSerializer(GenericJacksonJsonRedisSerializer.builder().build()));
+                        .fromSerializer(GenericJacksonJsonRedisSerializer.builder()
+                                .enableDefaultTyping(typeValidator)
+                                .build()));
 
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(config)
