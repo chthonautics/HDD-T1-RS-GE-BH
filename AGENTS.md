@@ -78,3 +78,25 @@ An OpenAPI 3.1 spec for these endpoints lives in `docs/openapi.yaml`.
 ```
 
 MongoDB and Redis must be running locally for the app to start.
+
+## Testing
+
+Tests live under `src/test/java/cl/usm/hddt1rsgebh/`, mirroring the main
+package layout. Run them with `./mvnw test`.
+
+- `services/ShipmentServiceTest` — unit tests (Mockito) for the domain logic:
+  unit conversion, `isPrime`, weight-category derivation, the status-transition
+  flow, and the heavy-weighing time/prime rules (current time is pinned with
+  `Mockito.mockStatic` so the rules are deterministic).
+- `controllers/ShipmentControllerTest`, `controllers/ScaleControllerTest` —
+  `@WebMvcTest` slices driving the endpoints through `MockMvc`, with the
+  collaborators replaced by `@MockitoBean`.
+- `repositories/ShipmentRepositoryTest` — `@DataMongoTest` covering the custom
+  `findByUpdatedAtBetween` query. It needs a local MongoDB but points at a
+  dedicated `hddt1rsgebh_test` database (via `@TestPropertySource`) so the
+  application's `RegistroPesaje` collection is never touched.
+- `integration/ExternalScaleClientTest` — fakes the sansaweigh API with
+  `MockRestServiceServer` (no real network), exercising the success, cache
+  fallback, and sentinel paths. To keep this testable, `ExternalScaleClient`
+  takes an injected `RestClient.Builder` and retry delays via a
+  package-private constructor; tests pass zero delays to skip the retry sleeps.

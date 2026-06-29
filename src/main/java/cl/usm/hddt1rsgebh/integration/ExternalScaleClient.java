@@ -3,6 +3,7 @@ package cl.usm.hddt1rsgebh.integration;
 import cl.usm.hddt1rsgebh.dto.Scale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
@@ -16,14 +17,24 @@ public class ExternalScaleClient {
 
     private static final String CACHE_NAME = "scaleSpecs";
     // delays applied before each retry; one entry per retry (1s, 5s, 10s)
-    private static final long[] RETRY_DELAYS_MS = {1000, 5000, 10000};
+    private static final long[] DEFAULT_RETRY_DELAYS_MS = {1000, 5000, 10000};
 
     private final RestClient client;
     private final CacheManager cacheManager;
+    private final long[] retryDelaysMs;
 
-    public ExternalScaleClient(@Value("${sansaweigh.api.url:''}") String url, CacheManager cacheManager) {
-        this.client = RestClient.builder().baseUrl(url).build();
+    @Autowired
+    public ExternalScaleClient(@Value("${sansaweigh.api.url:''}") String url,
+                               RestClient.Builder builder, CacheManager cacheManager) {
+        this(builder.baseUrl(url).build(), cacheManager, DEFAULT_RETRY_DELAYS_MS);
+    }
+
+    // visible for testing: lets tests bind a mock RestClient and shorten the
+    // retry delays so the fallback path doesn't actually sleep for ~16s
+    ExternalScaleClient(RestClient client, CacheManager cacheManager, long[] retryDelaysMs) {
+        this.client = client;
         this.cacheManager = cacheManager;
+        this.retryDelaysMs = retryDelaysMs;
     }
 
     /*
@@ -34,8 +45,8 @@ public class ExternalScaleClient {
      * fallback for when the external service is unreachable.
      */
     public Scale getScaleSpecifications(String id){
-        for (int attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-            if (attempt > 0 && !sleep(RETRY_DELAYS_MS[attempt - 1])) {
+        for (int attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+            if (attempt > 0 && !sleep(retryDelaysMs[attempt - 1])) {
                 break; // interrupted; stop retrying and fall back to cache
             }
             try {
@@ -44,7 +55,7 @@ public class ExternalScaleClient {
                 return scale;
             } catch (RestClientException e) {
                 log.warn("Scale fetch for id {} failed (attempt {}/{}): {}",
-                        id, attempt + 1, RETRY_DELAYS_MS.length + 1, e.getMessage());
+                        id, attempt + 1, retryDelaysMs.length + 1, e.getMessage());
             }
         }
 
