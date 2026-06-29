@@ -91,7 +91,7 @@ public class ShipmentService {
 
         // rules 2 and 3 only constrain weighing a heavy package
         boolean weighingHeavy = target == Status.PESADO
-                && shipment.getWeightCategory() == WeightCategory.HEAVY;
+                && shipment.getWeightCategory() == WeightCategory.PESADO;
         if (!weighingHeavy){
             return;
         }
@@ -182,8 +182,8 @@ public class ShipmentService {
     private WeightCategory getWeightCategory(Double kg){
         double sa = kgToSa(kg);
 
-        if (sa <= 10){ return WeightCategory.LIGHT; }
-        if (sa <= 50){ return WeightCategory.MEDIUM; }
-        return WeightCategory.HEAVY;
+        if (sa <= 10){ return WeightCategory.LIVIANO; }
+        if (sa <= 50){ return WeightCategory.MEDIANO; }
+        return WeightCategory.PESADO;
     }
 }

@@ -1,0 +1,296 @@
+openapi: 3.1.1
+info:
+  title: API de Pesaje de Envíos HDD-T1-RS-GE-BH
+  description: |
+    API REST para el seguimiento de envíos pesados en balanzas externas.
+
+    Los pesos usan una unidad personalizada, la **Sansa (Sa)**: 1 Sa = 1.337 Kg.
+    Los pesos entrantes se envían en kilogramos y se almacenan internamente en Sa.
+
+    A cada envío se le asigna una `weight_category` derivada de su peso en Sa:
+    `LIVIANO` (≤ 10 Sa), `MEDIANO` (≤ 50 Sa), `PESADO` (> 50 Sa).
+
+    El `status` de un envío sigue un flujo fijo, recorrible en ambos sentidos
+    para corregir errores:
+    `INGRESADO → PESADO → APROBADO`/`RECHAZADO → DESPACHADO`.
+
+    El pesaje de un paquete de categoría `PESADO` (transición al estado `PESADO`) está sujeto a reglas
+    adicionales (las horas usan la zona `America/Santiago`):
+      - no se permite el pesaje de paquetes pesados entre las 20:00 (inclusive) y
+        las 06:00 (exclusive);
+      - un `scale_id` numérico primo no puede pesar paquetes pesados en días impares.
+
+    Todo el JSON usa la convención de nombres `snake_case`.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Servidor de desarrollo local
+tags:
+  - name: Shipments
+    description: Crear, listar y cambiar el estado de los envíos.
+  - name: Scales
+    description: Consultar las especificaciones de balanzas desde la API externa sansaweigh.
+paths:
+  /shipments:
+    post:
+      tags:
+        - Shipments
+      summary: Crear un envío
+      description: |
+        Crea un nuevo envío a partir del cuerpo de la solicitud. El `weight`
+        enviado (en Kg) se convierte a Sa y se almacena, la `weight_category` se
+        deriva, y el envío comienza en el estado `INGRESADO`.
+      operationId: createShipment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShipmentRequest'
+      responses:
+        '200':
+          description: |
+            Solicitud procesada. El cuerpo es `true` si el envío se persistió, o
+            `false` si la persistencia falló.
+          content:
+            application/json:
+              schema:
+                type: boolean
+                examples:
+                  - true
+  /shipments/{date}:
+    get:
+      tags:
+        - Shipments
+      summary: Listar envíos actualizados en una fecha
+      description: |
+        Devuelve todos los envíos cuyo `updated_at` corresponde a la fecha dada
+        (un único día en la zona `America/Santiago`).
+      operationId: getShipmentsByDate
+      parameters:
+        - name: date
+          in: path
+          required: true
+          description: Fecha en formato ISO 8601 (`YYYY-MM-DD`).
+          schema:
+            type: string
+            format: date
+            examples:
+              - '2026-06-29'
+      responses:
+        '200':
+          description: Una lista de envíos (posiblemente vacía).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Shipment'
+        '400':
+          description: El parámetro de ruta `date` no es una fecha ISO 8601 válida.
+  /shipments/{id}:
+    patch:
+      tags:
+        - Shipments
+      summary: Cambiar el estado de un envío
+      description: |
+        Cambia el envío identificado por `id` al `status` indicado en el cuerpo
+        de la solicitud. La transición se valida contra el flujo de estados y,
+        para los paquetes pesados que se están pesando, contra las reglas de
+        hora del día y de balanza primo.
+      operationId: updateShipment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador del envío (id del documento de MongoDB).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusUpdateRequest'
+      responses:
+        '200':
+          description: |
+            Transición aceptada. El cuerpo es `true` si el cambio se persistió, o
+            `false` si la persistencia falló.
+          content:
+            application/json:
+              schema:
+                type: boolean
+                examples:
+                  - true
+        '400':
+          description: |
+            El estado solicitado es desconocido, o la transición viola una regla
+            de dominio (paso de flujo inválido, pesaje de paquete pesado en horas
+            prohibidas, o una balanza primo pesando un paquete pesado en día
+            impar). El cuerpo es un mensaje de texto plano que describe el problema.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                unknownStatus:
+                  value: 'Unknown status: FOO'
+                invalidTransition:
+                  value: 'Invalid status transition: INGRESADO -> DESPACHADO'
+                forbiddenHours:
+                  value: Cannot weigh heavy packages between 20:00 and 06:00
+                primeOddDay:
+                  value: Scale 7 cannot weigh heavy packages on odd days (prime scale id)
+        '404':
+          description: No existe ningún envío con el `id` dado.
+  /scales/{id}:
+    get:
+      tags:
+        - Scales
+      summary: Obtener las especificaciones de una balanza
+      description: |
+        Obtiene las especificaciones de una balanza desde la API externa
+        sansaweigh. La llamada externa prioriza la API con reintentos (retrasos
+        de 1s, 5s, 10s); la caché de Redis se consulta solo como respaldo cuando
+        todos los intentos fallan. Si la API es inalcanzable y no hay nada en
+        caché, se devuelve una balanza centinela con `id` `"-1"` y campos en cero
+        con un estado 200.
+      operationId: getScaleById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Identificador de la balanza.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Las especificaciones de la balanza.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scale'
+        '404':
+          description: No se devolvió ninguna balanza para el `id` dado.
+components:
+  schemas:
+    ShipmentRequest:
+      type: object
+      description: Carga útil para crear un envío.
+      required:
+        - scale_id
+        - package_id
+        - weight
+      properties:
+        scale_id:
+          type: string
+          description: Identificador de la balanza usada. Requerido, no debe estar en blanco.
+          examples:
+            - '7'
+        package_id:
+          type: string
+          description: Identificador del paquete. Requerido, no debe estar en blanco.
+          examples:
+            - PKG-001
+        weight:
+          type: number
+          format: double
+          description: Peso del paquete en kilogramos (Kg). Requerido.
+          examples:
+            - 12.5
+    StatusUpdateRequest:
+      type: object
+      description: Carga útil para cambiar un envío a un nuevo estado.
+      required:
+        - status
+      properties:
+        status:
+          allOf:
+            - $ref: '#/components/schemas/Status'
+          description: Estado destino. Requerido, no debe estar en blanco.
+    Shipment:
+      type: object
+      description: Un registro de envío persistido (colección `RegistroPesaje` de MongoDB).
+      properties:
+        id:
+          type: string
+          description: Identificador del envío, generado por MongoDB.
+          examples:
+            - 665f1c2e9a3b4c0012ab34cd
+        scale_id:
+          type: string
+          examples:
+            - '7'
+        package_id:
+          type: string
+          examples:
+            - PKG-001
+        weight:
+          type: number
+          format: double
+          description: Peso almacenado en Sansa (Sa). 1 Sa = 1.337 Kg.
+          examples:
+            - 16.7125
+        weight_category:
+          $ref: '#/components/schemas/WeightCategory'
+        status:
+          $ref: '#/components/schemas/Status'
+        updated_at:
+          type: string
+          format: date-time
+          description: Instante en que el envío fue creado o actualizado por última vez (UTC).
+          examples:
+            - '2026-06-29T14:32:10.123Z'
+    Scale:
+      type: object
+      description: Especificaciones de una balanza, obtenidas desde la API externa sansaweigh.
+      properties:
+        id:
+          type: string
+          description: Identificador de la balanza. `"-1"` indica una balanza centinela/de respaldo.
+          examples:
+            - '7'
+        name:
+          type: string
+          examples:
+            - Bascula Norte
+        brand:
+          type: string
+          examples:
+            - SansaWeigh
+        max_capacity:
+          type: number
+          format: double
+          examples:
+            - 500.0
+        precision:
+          type: number
+          format: double
+          examples:
+            - 0.01
+        max_calibration_offset:
+          type: number
+          format: double
+          examples:
+            - 0.5
+    Status:
+      type: string
+      description: |
+        Estado del envío. Flujo: `INGRESADO → PESADO → APROBADO`/`RECHAZADO →
+        DESPACHADO`, recorrible en ambos sentidos.
+      enum:
+        - INGRESADO
+        - PESADO
+        - APROBADO
+        - RECHAZADO
+        - DESPACHADO
+    WeightCategory:
+      type: string
+      description: |
+        Categoría de peso derivada del peso en Sa:
+        `LIVIANO` (≤ 10), `MEDIANO` (≤ 50), `PESADO` (> 50).
+      enum:
+        - LIVIANO
+        - MEDIANO
+        - PESADO
